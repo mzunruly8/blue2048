@@ -1,0 +1,783 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Claymation 2048: Orb Wandering</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        body {
+            margin: 0;
+            padding: 0;
+            background: #221e1a; /* Warm earthen clay background */
+            color: #f5efe6;
+            overflow: hidden;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            position: fixed;
+            width: 100%;
+            height: 100%;
+        }
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            touch-action: none;
+        }
+        #hud {
+            position: absolute;
+            top: env(safe-area-inset-top, 16px);
+            left: 16px;
+            right: 16px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            pointer-events: none;
+            z-index: 10;
+        }
+        .clay-panel {
+            background: #3a322d;
+            border: 3px solid #4a3f39;
+            border-radius: 14px;
+            padding: 8px 14px;
+            box-shadow: inset -2px -2px 0px #2a2420, 3px 3px 6px rgba(0,0,0,0.4);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .stats-row {
+            display: flex;
+            gap: 8px;
+        }
+        .stat-label {
+            font-size: 9px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #a8998a;
+            font-weight: bold;
+        }
+        .stat-value {
+            font-size: 18px;
+            font-weight: 900;
+            color: #f5efe6;
+        }
+        #time-val.danger {
+            color: #ff4d4d;
+            animation: pulse 0.5s infinite alternate;
+        }
+        @keyframes pulse {
+            from { transform: scale(1); }
+            to { transform: scale(1.1); }
+        }
+        #restart-btn {
+            position: absolute;
+            bottom: calc(env(safe-area-inset-bottom, 16px) + 32px);
+            right: 16px;
+            background: #4a3f39;
+            border: 3px solid #5a4f49;
+            color: #f5efe6;
+            border-radius: 50%;
+            width: 48px;
+            height: 48px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            box-shadow: inset -2px -2px 0px #2a2420, 2px 4px 6px rgba(0,0,0,0.3);
+            z-index: 10;
+        }
+    </style>
+</head>
+<body>
+    <div id="hud">
+        <div class="clay-panel">
+            <div class="stat-label">Your Clay</div>
+            <div id="player-val" class="stat-value" style="color: #66d9ff;">2</div>
+        </div>
+        <div class="stats-row">
+            <div class="clay-panel">
+                <div class="stat-label">Time Left</div>
+                <div id="time-val" class="stat-value">45s</div>
+            </div>
+            <div class="clay-panel">
+                <div class="stat-label">Score</div>
+                <div id="score-val" class="stat-value">0</div>
+            </div>
+        </div>
+    </div>
+    
+    <div id="restart-btn">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+        </svg>
+    </div>
+
+    <canvas id="canvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const playerValEl = document.getElementById('player-val');
+        const scoreValEl = document.getElementById('score-val');
+        const timeValEl = document.getElementById('time-val');
+        const restartBtn = document.getElementById('restart-btn');
+
+        let dpr = window.devicePixelRatio || 1;
+        let width = window.innerWidth;
+        let height = window.innerHeight;
+
+        function resize() {
+            width = window.innerWidth;
+            height = window.innerHeight;
+            canvas.width = width * dpr;
+            canvas.height = height * dpr;
+            ctx.scale(dpr, dpr);
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        // Claymation Palette (Matte Plasticine Tones)
+        const CLAY_COLORS = {
+            2: '#4e5d6c', 4: '#637a91', 8: '#d97443', 16: '#c65935',
+            32: '#b53f31', 64: '#962b23', 128: '#cc9943', 256: '#b58331',
+            512: '#419659', 1024: '#7a4ba6', 2048: '#bc4385'
+        };
+
+        const PLAYER_COLOR = '#26b3d4';
+        const VLORB_COLOR = '#661111';
+        const GRAVITELL_COLOR = '#3b1d54';
+
+        // Game State Variables
+        let score = 0;
+        let timeLeft = 45;
+        let gameOver = false;
+        let screenShake = 0;
+        let lastTimeUpdate = 0;
+        let stopMotionTick = 0;
+        let lastStopMotionTime = 0;
+
+        const joystick = {
+            startX: 0, startY: 0, curX: 0, curY: 0,
+            active: false, identifier: null, maxRadius: 50, vx: 0, vy: 0
+        };
+
+        // Passive Object Arrays
+        let player = null;
+        let orbs = [];
+        let hazards = []; // Vlorbs and Gravitells
+        let items = [];   // Buff Powerups
+        let particles = [];
+
+        // Helper: Generate bumpy, imperfect clay profiles
+        function generateClayWobble(radius, segments = 8) {
+            const points = [];
+            for (let i = 0; i < segments; i++) {
+                const angle = (i / segments) * Math.PI * 2;
+                // Soft distortion variance mimicking real thumb pressure points
+                const distortion = (Math.random() - 0.5) * (radius * 0.12);
+                points.push({
+                    x: Math.cos(angle) * (radius + distortion),
+                    y: Math.sin(angle) * (radius + distortion)
+                });
+            }
+            return points;
+        }
+
+        class Particle {
+            constructor(x, y, color) {
+                this.x = x; this.y = y;
+                this.vx = (Math.random() - 0.5) * 6;
+                this.vy = (Math.random() - 0.5) * 6;
+                this.radius = Math.random() * 5 + 3;
+                this.alpha = 1;
+                this.decay = Math.random() * 0.04 + 0.02;
+                this.color = color;
+            }
+            update() {
+                this.x += this.vx; this.y += this.vy;
+                this.alpha -= this.decay;
+            }
+            draw() {
+                ctx.save();
+                ctx.globalAlpha = this.alpha;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                ctx.fillStyle = this.color;
+                ctx.fill();
+                ctx.restore();
+            }
+        }
+
+        class PowerUp {
+            constructor(x, y, type) {
+                this.x = x; this.y = y;
+                this.type = type; // 'magnet' or 'stasis'
+                this.radius = 16;
+                this.wobbleProfile = generateClayWobble(this.radius, 6);
+                this.pulse = 0;
+            }
+            update() {
+                this.pulse += 0.05;
+                if (stopMotionTick % 12 === 0 && Math.random() > 0.7) {
+                    this.wobbleProfile = generateClayWobble(this.radius, 6);
+                }
+            }
+            draw() {
+                ctx.save();
+                ctx.translate(this.x, this.y);
+                ctx.scale(1 + Math.sin(this.pulse)*0.08, 1 + Math.sin(this.pulse)*0.08);
+                
+                ctx.beginPath();
+                ctx.moveTo(this.wobbleProfile[0].x, this.wobbleProfile[0].y);
+                for(let i=1; i<this.wobbleProfile.length; i++) {
+                    ctx.lineTo(this.wobbleProfile[i].x, this.wobbleProfile[i].y);
+                }
+                ctx.closePath();
+                ctx.fillStyle = this.type === 'magnet' ? '#ffcc00' : '#47e5ff';
+                ctx.fill();
+                ctx.strokeStyle = '#fff';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+                
+                // Draw dynamic inner symbol
+                ctx.fillStyle = '#221e1a';
+                ctx.font = 'bold 12px sans-serif';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(this.type === 'magnet' ? 'M' : 'S', 0, 0);
+                ctx.restore();
+            }
+        }
+
+        class Hazard {
+            constructor(x, y, type) {
+                this.x = x; this.y = y;
+                this.type = type; // 'vlorb' or 'gravitell'
+                this.radius = type === 'vlorb' ? 26 : 40;
+                this.vx = (Math.random() - 0.5) * 1.2;
+                this.vy = (Math.random() - 0.5) * 1.2;
+                this.angle = Math.random() * Math.PI;
+                
+                // Jagged spikes for Vlorbs, deep channels for vortex wells
+                this.wobbleProfile = generateClayWobble(this.radius, type === 'vlorb' ? 14 : 8);
+                this.toDestroy = false;
+            }
+            update() {
+                if (this.type === 'vlorb') {
+                    this.x += this.vx;
+                    this.y += this.vy;
+                    if (this.x - this.radius < 0 || this.x + this.radius > width) this.vx *= -1;
+                    if (this.y - this.radius < 0 || this.y + this.radius > height) this.vy *= -1;
+                    
+                    if (stopMotionTick % 10 === 0) {
+                        this.wobbleProfile = generateClayWobble(this.radius, 13);
+                    }
+                } else {
+                    // Gravitell rotation
+                    this.angle += 0.02;
+                    // Sucks items and player inward
+                    const targetOrbs = [player, ...orbs];
+                    targetOrbs.forEach(orb => {
+                        if(!orb) return;
+                        const d = Math.hypot(this.x - orb.x, this.y - orb.y);
+                        if (d < 180 && d > 10) {
+                            const force = (180 - d) * 0.006;
+                            orb.x += ((this.x - orb.x) / d) * force;
+                            orb.y += ((this.y - orb.y) / d) * force;
+                            if (orb.isPlayer && d < this.radius) {
+                                timeLeft -= 0.1; // Drain time if caught directly inside singularity
+                                screenShake = 2;
+                            }
+                        }
+                    });
+                }
+            }
+            draw() {
+                ctx.save();
+                ctx.translate(this.x, this.y);
+                ctx.rotate(this.angle);
+
+                ctx.beginPath();
+                ctx.moveTo(this.wobbleProfile[0].x, this.wobbleProfile[0].y);
+                for(let i=1; i<this.wobbleProfile.length; i++) {
+                    ctx.lineTo(this.wobbleProfile[i].x, this.wobbleProfile[i].y);
+                }
+                ctx.closePath();
+
+                if (this.type === 'vlorb') {
+                    ctx.fillStyle = VLORB_COLOR;
+                    ctx.fill();
+                    ctx.strokeStyle = '#ff3333';
+                    ctx.lineWidth = 3;
+                    ctx.stroke();
+                    // Core detail
+                    ctx.fillStyle = '#ff3333';
+                    ctx.font = 'bold 11px sans-serif';
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText('⚡', 0, 0);
+                } else {
+                    // Gravitell vortex rendering
+                    ctx.fillStyle = GRAVITELL_COLOR;
+                    ctx.fill();
+                    ctx.strokeStyle = '#a64dff';
+                    ctx.lineWidth = 4;
+                    ctx.stroke();
+                    
+                    ctx.beginPath();
+                    ctx.arc(0, 0, this.radius * 0.4, 0, Math.PI * 2);
+                    ctx.fillStyle = '#11051c';
+                    ctx.fill();
+                }
+                ctx.restore();
+            }
+        }
+
+        class Orb {
+            constructor(x, y, value = 2, isPlayer = false) {
+                this.x = x; this.y = y;
+                this.value = value;
+                this.isPlayer = isPlayer;
+                this.baseRadius = 24;
+                this.radius = this.calculateRadius();
+                this.targetRadius = this.radius;
+                this.vx = isPlayer ? 0 : (Math.random() - 0.5) * 1.4;
+                this.vy = isPlayer ? 0 : (Math.random() - 0.5) * 1.4;
+                
+                this.wobbleProfile = generateClayWobble(this.radius, 9);
+                this.toDestroy = false;
+                this.lookAngle = 0;
+                this.squint = 0;
+            }
+
+            calculateRadius() {
+                return this.baseRadius + Math.log2(this.value) * 3.5;
+            }
+
+            update() {
+                if (Math.abs(this.radius - this.targetRadius) > 0.1) {
+                    this.radius += (this.targetRadius - this.radius) * 0.1;
+                }
+
+                // Periodic asset profile updates to deliver stop-motion texture feel
+                if (stopMotionTick % 14 === 0 && Math.random() > 0.4) {
+                    this.wobbleProfile = generateClayWobble(this.radius, 9);
+                }
+
+                if (this.isPlayer) {
+                    if (joystick.active) {
+                        this.vx = joystick.vx * 5.5;
+                        this.vy = joystick.vy * 5.5;
+                        this.lookAngle = Math.atan2(joystick.vy, joystick.vx);
+                    } else {
+                        this.vx *= 0.85;
+                        this.vy *= 0.85;
+                    }
+                    this.x += this.vx;
+                    this.y += this.vy;
+                    if (this.squint > 0) this.squint -= 0.04;
+
+                    // Handle active player status buffs
+                    if (player.magnetTime > 0) {
+                        player.magnetTime--;
+                        orbs.forEach(orb => {
+                            if (orb.value === this.value) {
+                                const d = Math.hypot(this.x - orb.x, this.y - orb.y);
+                                if (d < 250) {
+                                    orb.x += ((this.x - orb.x) / d) * 3;
+                                    orb.y += ((this.y - orb.y) / d) * 3;
+                                }
+                            }
+                        });
+                    }
+                    if (player.stasisTime > 0) player.stasisTime--;
+
+                } else {
+                    // Drifting AI logic
+                    if (!player || player.stasisTime <= 0) {
+                        this.x += this.vx;
+                        this.y += this.vy;
+                        this.vx += (Math.random() - 0.5) * 0.15;
+                        this.vy += (Math.random() - 0.5) * 0.15;
+
+                        const speed = Math.hypot(this.vx, this.vy);
+                        if (speed > 1.6) {
+                            this.vx = (this.vx / speed) * 1.6;
+                            this.vy = (this.vy / speed) * 1.6;
+                        }
+                    }
+                }
+
+                const r = this.radius;
+                if (this.x - r < 0) { this.x = r; this.vx *= -1; }
+                if (this.x + r > width) { this.x = width - r; this.vx *= -1; }
+                if (this.y - r < 0) { this.y = r; this.vy *= -1; }
+                if (this.y + r > height) { this.y = height - r; this.vy *= -1; }
+            }
+
+            draw() {
+                ctx.save();
+                ctx.translate(this.x, this.y);
+
+                // Plasticine baseline drop shadow
+                ctx.shadowColor = 'rgba(10, 8, 5, 0.45)';
+                ctx.shadowBlur = 8;
+                ctx.shadowOffsetY = 5;
+
+                ctx.beginPath();
+                ctx.moveTo(this.wobbleProfile[0].x, this.wobbleProfile[0].y);
+                for(let i=1; i<this.wobbleProfile.length; i++) {
+                    ctx.lineTo(this.wobbleProfile[i].x, this.wobbleProfile[i].y);
+                }
+                ctx.closePath();
+                ctx.fillStyle = this.isPlayer ? PLAYER_COLOR : (CLAY_COLORS[this.value] || CLAY_COLORS[2048]);
+                ctx.fill();
+
+                // Flatten shadow processing
+                ctx.shadowColor = 'transparent';
+                ctx.strokeStyle = 'rgba(0,0,0,0.2)';
+                ctx.lineWidth = 3;
+                ctx.stroke();
+
+                // Draw Clay Faces
+                if (this.isPlayer) {
+                    ctx.fillStyle = '#1c2226';
+                    const lookDist = this.radius * 0.22;
+                    const ex = Math.cos(this.lookAngle) * lookDist;
+                    const ey = Math.sin(this.lookAngle) * lookDist;
+                    
+                    const leftX = ex - 7, rightX = ex + 7;
+                    if (this.squint > 0.1) {
+                        ctx.strokeStyle = '#1c2226';
+                        ctx.lineWidth = 3;
+                        ctx.lineCap = 'round';
+                        ctx.beginPath(); ctx.arc(leftX, ey, 4, Math.PI, 0); ctx.stroke();
+                        ctx.beginPath(); ctx.arc(rightX, ey, 4, Math.PI, 0); ctx.stroke();
+                    } else {
+                        ctx.beginPath(); ctx.arc(leftX, ey, 4, 0, Math.PI*2); ctx.arc(rightX, ey, 4, 0, Math.PI*2); ctx.fill();
+                    }
+
+                    // Value label on player
+                    ctx.fillStyle = '#ffffff';
+                    ctx.font = `bold ${this.radius * 0.42}px monospace`;
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText(this.value, 0, this.radius * 0.45);
+                    
+                    // Buff Aura indicator lines
+                    if (player.magnetTime > 0) {
+                        ctx.strokeStyle = '#ffcc00'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(0,0, this.radius+6, 0, Math.PI*2); ctx.stroke();
+                    }
+                    if (player.stasisTime > 0) {
+                        ctx.strokeStyle = '#47e5ff'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(0,0, this.radius+8, 0, Math.PI*2); ctx.stroke();
+                    }
+                } else {
+                    ctx.fillStyle = 'rgba(255,255,255,0.75)';
+                    ctx.font = `bold ${this.radius * 0.52}px monospace`;
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText(this.value, 0, 0);
+                }
+                ctx.restore();
+            }
+        }
+
+        function init() {
+            score = 0;
+            timeLeft = 45;
+            gameOver = false;
+            orbs = [];
+            hazards = [];
+            items = [];
+            particles = [];
+            
+            scoreValEl.textContent = score;
+            timeValEl.classList.remove('danger');
+
+            player = new Orb(width / 2, height / 2, 2, true);
+            player.magnetTime = 0;
+            player.stasisTime = 0;
+            playerValEl.textContent = player.value;
+
+            // Spawn standard wander population
+            const initialCount = Math.min(15, Math.floor((width * height) / 40000));
+            for (let i = 0; i < initialCount; i++) spawnOrb();
+
+            // Populate persistent static hazards
+            hazards.push(new Hazard(width * 0.25, height * 0.3, 'gravitell'));
+            hazards.push(new Hazard(width * 0.75, height * 0.7, 'gravitell'));
+            hazards.push(new Hazard(width * 0.5, height * 0.5, 'vlorb'));
+        }
+
+        function spawnOrb() {
+            const rx = Math.random() * (width - 100) + 50;
+            const ry = Math.random() * (height - 100) + 50;
+            if (Math.hypot(rx - player.x, ry - player.y) < 140) return;
+
+            let spawnVal = Math.random() > 0.6 ? 4 : 2;
+            if (player.value > 4 && Math.random() > 0.75) {
+                spawnVal = Math.pow(2, Math.floor(Math.random() * (Math.log2(player.value) - 1)) + 1);
+            }
+            orbs.push(new Orb(rx, ry, spawnVal));
+        }
+
+        // --- Touch Engine Controls ---
+        window.addEventListener('touchstart', (e) => {
+            if (gameOver) return;
+            const t = e.changedTouches[0];
+            if (t.clientY < 90 || (t.clientX > width - 70 && t.clientY > height - 100)) return;
+
+            if (!joystick.active) {
+                joystick.active = true;
+                joystick.identifier = t.identifier;
+                joystick.startX = t.clientX; joystick.startY = t.clientY;
+                joystick.curX = t.clientX; joystick.curY = t.clientY;
+                joystick.vx = 0; joystick.vy = 0;
+            }
+        }, { passive: true });
+
+        window.addEventListener('touchmove', (e) => {
+            if (!joystick.active) return;
+            for (let i = 0; i < e.touches.length; i++) {
+                const t = e.touches[i];
+                if (t.identifier === joystick.identifier) {
+                    joystick.curX = t.clientX; joystick.curY = t.clientY;
+                    const dx = joystick.curX - joystick.startX;
+                    const dy = joystick.curY - joystick.startY;
+                    const dist = Math.hypot(dx, dy);
+
+                    if (dist > joystick.maxRadius) {
+                        joystick.vx = dx / dist; joystick.vy = dy / dist;
+                        joystick.curX = joystick.startX + joystick.vx * joystick.maxRadius;
+                        joystick.curY = joystick.startY + joystick.vy * joystick.maxRadius;
+                    } else {
+                        joystick.vx = dx / joystick.maxRadius;
+                        joystick.vy = dy / joystick.maxRadius;
+                    }
+                }
+            }
+        }, { passive: true });
+
+        const releaseJoystick = () => { joystick.active = false; joystick.vx = 0; joystick.vy = 0; };
+        window.addEventListener('touchend', releaseJoystick);
+        window.addEventListener('touchcancel', releaseJoystick);
+
+        restartBtn.addEventListener('click', init);
+
+        function drawJoystick() {
+            if (!joystick.active) return;
+            ctx.save();
+            ctx.beginPath();
+            ctx.arc(joystick.startX, joystick.startY, joystick.maxRadius, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.05)';
+            ctx.fill();
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+
+            ctx.beginPath();
+            ctx.arc(joystick.curX, joystick.curY, 18, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(38, 179, 212, 0.8)';
+            ctx.fill();
+            ctx.restore();
+        }
+
+        function handleCollisions() {
+            // 1. Player colliding with Buff Items
+            for (let i = items.length - 1; i >= 0; i--) {
+                const item = items[i];
+                if (Math.hypot(player.x - item.x, player.y - item.y) < player.radius + item.radius) {
+                    if (item.type === 'magnet') player.magnetTime = 400;
+                    if (item.type === 'stasis') player.stasisTime = 300;
+                    
+                    // Cleanup particle pop
+                    for(let p=0; p<10; p++) particles.push(new Particle(item.x, item.y, '#fff'));
+                    items.splice(i, 1);
+                    score += 50;
+                    scoreValEl.textContent = score;
+                }
+            }
+
+            // 2. Player colliding with Hazards
+            hazards.forEach(hazard => {
+                const d = Math.hypot(player.x - hazard.x, player.y - hazard.y);
+                if (d < player.radius + hazard.radius) {
+                    if (hazard.type === 'vlorb') {
+                        // Impact penalty: half value
+                        if (player.value > 2) {
+                            player.value = Math.max(2, player.value / 2);
+                            player.targetRadius = player.calculateRadius();
+                            playerValEl.textContent = player.value;
+                            screenShake = 14;
+                            for(let p=0; p<20; p++) particles.push(new Particle(player.x, player.y, VLORB_COLOR));
+                            // Shift hazard location post impact
+                            hazard.x = Math.random() * (width - 100) + 50;
+                            hazard.y = Math.random() * (height - 100) + 50;
+                        }
+                    }
+                }
+            });
+
+            // 3. System Orbs vs Systems Orbs (Standard 2048 calculations)
+            const all = [player, ...orbs];
+            for (let i = 0; i < all.length; i++) {
+                for (let j = i + 1; j < all.length; j++) {
+                    const o1 = all[i]; const o2 = all[j];
+                    if (o1.toDestroy || o2.toDestroy) continue;
+
+                    const dx = o2.x - o1.x; const dy = o2.y - o1.y;
+                    const distance = Math.hypot(dx, dy);
+                    const minDist = o1.radius + o2.radius;
+
+                    if (distance < minDist) {
+                        if (o1.value === o2.value) {
+                            const survivor = o1.isPlayer ? o1 : o2;
+                            const consumed = o1.isPlayer ? o2 : o1;
+
+                            survivor.value *= 2;
+                            survivor.targetRadius = survivor.calculateRadius();
+                            consumed.toDestroy = true;
+
+                            if (survivor.isPlayer) {
+                                survivor.squint = 1.0;
+                                score += survivor.value;
+                                timeLeft += Math.log2(survivor.value) * 1.5; // Gain time reward
+                                scoreValEl.textContent = score;
+                                playerValEl.textContent = survivor.value;
+                                screenShake = 8;
+                            }
+
+                            const pColor = survivor.isPlayer ? PLAYER_COLOR : (CLAY_COLORS[survivor.value] || '#fff');
+                            for (let p = 0; p < 15; p++) particles.push(new Particle(consumed.x, consumed.y, pColor));
+                        } else {
+                            // Physics Bounce
+                            const nx = dx / distance; const ny = dy / distance;
+                            const kx = o1.vx - o2.vx; const ky = o1.vy - o2.vy;
+                            const impulse = 2 * (nx * kx + ny * ky) / 2;
+
+                            if (!o1.isPlayer) { o1.vx -= impulse * nx; o1.vy -= impulse * ny; }
+                            if (!o2.isPlayer) { o2.vx += impulse * nx; o2.vy += impulse * ny; }
+
+                            const overlap = minDist - distance;
+                            if (!o1.isPlayer && !o2.isPlayer) {
+                                o1.x -= nx * overlap * 0.5; o1.y -= ny * overlap * 0.5;
+                                o2.x += nx * overlap * 0.5; o2.y += ny * overlap * 0.5;
+                            } else if (o1.isPlayer) {
+                                o2.x += nx * overlap; o2.y += ny * overlap;
+                            } else {
+                                o1.x -= nx * overlap; o1.y -= ny * overlap;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let lastSpawn = 0;
+        let lastItemSpawn = 0;
+
+        function updateSpawning(ts) {
+            if (ts - lastSpawn > 1600) {
+                if (orbs.length < 18) spawnOrb();
+                lastSpawn = ts;
+            }
+            // Spawn dynamic power up buffs periodically
+            if (ts - lastItemSpawn > 9000) {
+                if (items.length < 2) {
+                    items.push(new PowerUp(
+                        Math.random() * (width - 80) + 40,
+                        Math.random() * (height - 100) + 50,
+                        Math.random() > 0.5 ? 'magnet' : 'stasis'
+                    ));
+                }
+                lastItemSpawn = ts;
+            }
+        }
+
+        function loop(timestamp) {
+            // Maintain stop-motion frame-rate throttling markers
+            if (timestamp - lastStopMotionTime > 83) { // ~12 fps stop motion wiggles
+                stopMotionTick++;
+                lastStopMotionTime = timestamp;
+            }
+
+            // Realtime high performance clocks run down the core calculations at 60fps
+            if (!gameOver) {
+                if (timestamp - lastTimeUpdate > 1000) {
+                    timeLeft--;
+                    lastTimeUpdate = timestamp;
+                }
+                if (timeLeft <= 10) timeValEl.classList.add('danger');
+                else timeValEl.classList.remove('danger');
+
+                if (timeLeft <= 0) {
+                    timeLeft = 0;
+                    gameOver = true;
+                }
+                timeValEl.textContent = Math.ceil(timeLeft) + 's';
+            }
+
+            ctx.save();
+            if (screenShake > 0.1) {
+                ctx.translate((Math.random() - 0.5) * screenShake, (Math.random() - 0.5) * screenShake);
+                screenShake *= 0.88;
+            }
+
+            ctx.clearRect(0, 0, width, height);
+
+            if (!gameOver) {
+                updateSpawning(timestamp);
+                handleCollisions();
+                player.update();
+            }
+
+            // Render entities
+            hazards.forEach(h => { h.update(); h.draw(); });
+            items.forEach(item => { item.update(); item.draw(); });
+
+            for (let i = orbs.length - 1; i >= 0; i--) {
+                if (orbs[i].toDestroy) { orbs.splice(i, 1); continue; }
+                orbs[i].update();
+                orbs[i].draw();
+            }
+
+            player.draw();
+
+            for (let i = particles.length - 1; i >= 0; i--) {
+                particles[i].update();
+                particles[i].draw();
+                if (particles[i].alpha <= 0) particles.splice(i, 1);
+            }
+
+            drawJoystick();
+
+            if (gameOver) {
+                ctx.fillStyle = 'rgba(20, 16, 14, 0.75)';
+                ctx.fillRect(0, 0, width, height);
+                ctx.fillStyle = '#ff4d4d';
+                ctx.font = 'bold 32px sans-serif';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText('TIME EXPIRED', width / 2, height / 2 - 20);
+                
+                ctx.fillStyle = '#a8998a';
+                ctx.font = '16px sans-serif';
+                ctx.fillText(`Final Score: ${score}`, width / 2, height / 2 + 20);
+            }
+
+            ctx.restore();
+            requestAnimationFrame(loop);
+        }
+
+        init();
+        requestAnimationFrame((t) => {
+            lastTimeUpdate = t;
+            lastItemSpawn = t;
+            loop(t);
+        });
+    </script>
+</body>
+</html>
