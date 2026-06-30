@@ -1,4 +1,3 @@
-```html
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -129,7 +128,7 @@
         </div>
     </div>
 
-    <div id="instruction">Touch anywhere on the left side to spawn a floating joystick</div>
+    <div id="instruction">Touch anywhere on the screen to deploy the floating joystick</div>
     
     <div id="restart-btn">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
@@ -181,7 +180,7 @@
         let score = 0;
         let screenShake = 0;
 
-        // Floating Joystick Configuration State
+        // True Floating Joystick Configuration
         const joystick = {
             startX: 0, startY: 0,
             curX: 0, curY: 0,
@@ -244,10 +243,9 @@
                 }
 
                 if (this.isPlayer) {
-                    // Drive player velocity using joystick delta values
                     if (joystick.active) {
-                        this.vx = joystick.vx * 5;
-                        this.vy = joystick.vy * 5;
+                        this.vx = joystick.vx * 5.5;
+                        this.vy = joystick.vy * 5.5;
                         this.lookAngle = Math.atan2(joystick.vy, joystick.vx);
                     } else {
                         this.vx *= 0.85;
@@ -322,7 +320,7 @@
                     } else {
                         ctx.beginPath(); ctx.arc(leftEyeX, leftEyeY, normalEyeRadius, 0, Math.PI * 2); ctx.arc(rightEyeX, rightEyeY, normalEyeRadius, 0, Math.PI * 2); ctx.fill();
                         ctx.fillStyle = '#ffffff';
-                        ctx.beginPath(); ctx.arc(leftEyeX - normalEyeRadius * 0.3, leftEyeY - normalEyeRadius * 0.3, normalEyeRadius * 0.35, 0, Math.PI * 2); ctx.arc(rightEyeX - normalEyeRadius * 0.3, rightEyeY - normalEyeRadius * 0.3, normalEyeRadius * 0.35, 0, Math.PI * 2); ctx.fill();
+                        ctx.beginPath(); ctx.arc(leftEyeX - normalEyeRadius * 0.3, leftEyeY - normalEyeRadius * 0.3, normalEyeRadius * 0.35, 0, Math.PI * 2); ctx.beginPath(); ctx.arc(rightEyeX - normalEyeRadius * 0.3, rightEyeY - normalEyeRadius * 0.3, normalEyeRadius * 0.35, 0, Math.PI * 2); ctx.fill();
                     }
 
                     ctx.fillStyle = '#ffffff';
@@ -374,12 +372,16 @@
             orbs.push(new Orb(rx, ry, spawnVal));
         }
 
-        // --- Floating Joystick Touch Events ---
+        // --- Global Floating Joystick Touch Controls ---
         window.addEventListener('touchstart', (e) => {
+            // Drop restriction on screen halves—any touch activates the center base coordinate right there
             for (let i = 0; i < e.changedTouches.length; i++) {
                 const t = e.changedTouches[i];
-                // Check if touch occurs on the left side of the screen
-                if (!joystick.active && t.clientX < width / 2) {
+                
+                // Ignore touches targeting UI panels directly
+                if (t.clientY < 80 || (t.clientX > width - 70 && t.clientY > height - 100)) continue;
+
+                if (!joystick.active) {
                     joystick.active = true;
                     joystick.identifier = t.identifier;
                     joystick.startX = t.clientX;
@@ -388,6 +390,7 @@
                     joystick.curY = t.clientY;
                     joystick.vx = 0;
                     joystick.vy = 0;
+                    break;
                 }
             }
         }, { passive: true });
@@ -433,7 +436,8 @@
 
         // Mouse Support
         window.addEventListener('mousedown', (e) => {
-            if (e.clientX < width / 2 && !joystick.active) {
+            if (e.clientY < 80) return;
+            if (!joystick.active) {
                 joystick.active = true;
                 joystick.startX = e.clientX;
                 joystick.startY = e.clientY;
@@ -581,7 +585,6 @@
                 if (particles[i].alpha <= 0) particles.splice(i, 1);
             }
 
-            // Draw floating interface overlay on canvas top level
             drawJoystick();
 
             ctx.restore();
@@ -593,5 +596,3 @@
     </script>
 </body>
 </html>
-
-```
